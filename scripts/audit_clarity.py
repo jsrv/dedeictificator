@@ -142,6 +142,13 @@ INANIMATE_HEADS = {
 }
 
 FUNCTION_WORDS = {
+    "across",
+    "inside",
+    "outside",
+    "toward",
+    "towards",
+    "upon",
+    "within",
     "the",
     "a",
     "an",
@@ -407,10 +414,15 @@ COMMON_VERBS_AFTER_DEMO = {
     "had",
 }
 
+PROTECTED_PLACEHOLDERS = {"CODESPAN", "QUOTEDSPAN"}
+CLAUSE_BOUNDARY_PUNCT = {",", ";", ":", "(", ")", "--", "—"}
+
 TOKEN_RE = re.compile(r"[A-Za-z]+(?:[-'][A-Za-z]+)*|\d+(?:\.\d+)?|[^\w\s]")
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(\[])")
+YAML_FRONTMATTER_RE = re.compile(r"\A---\s*\n[\s\S]*?\n---\s*(?:\n|$)")
 FENCED_CODE_RE = re.compile(r"```[\s\S]*?```")
 INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+QUOTED_MENTION_RE = re.compile(r'"[^"\n]{1,60}"')
 MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 RAW_URL_RE = re.compile(r"https?://\S+")
 MD_PREFIX_RE = re.compile(r"^\s*(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+|>\s+)")
@@ -452,11 +464,15 @@ class AuditReport:
 
 
 def strip_protected_spans(text: str) -> str:
-    """Normalize Markdown links/URLs and neutralize code blocks without merging paragraphs."""
-    cleaned = FENCED_CODE_RE.sub("\n\n", text)
+    """Strip YAML frontmatter and neutralize code blocks, links, and short quoted mentions."""
+    cleaned = YAML_FRONTMATTER_RE.sub("", text)
+    cleaned = FENCED_CODE_RE.sub("\n\n", cleaned)
     cleaned = INLINE_CODE_RE.sub(" CODE_SPAN ", cleaned)
+    cleaned = QUOTED_MENTION_RE.sub(" QUOTED_SPAN ", cleaned)
     cleaned = MD_LINK_RE.sub(r"\1", cleaned)
     cleaned = RAW_URL_RE.sub(" ", cleaned)
+    cleaned = INLINE_CODE_RE.sub(" CODESPAN ", cleaned)
+    cleaned = QUOTED_MENTION_RE.sub(" QUOTEDSPAN ", cleaned)
     return cleaned
 
 
@@ -476,12 +492,26 @@ def split_sentences(text: str) -> list[str]:
     return sentences
 
 
+def tokenize_words_with_boundaries(sentence: str) -> tuple[list[str], list[bool]]:
+    """Return word tokens and a parallel list indicating whether clause punctuation follows."""
+    words: list[str] = []
+    punct_after: list[bool] = []
+    for tok in TOKEN_RE.findall(sentence):
+        if re.match(r"^[A-Za-z]", tok):
+            words.append(tok)
+            punct_after.append(False)
+        elif tok in CLAUSE_BOUNDARY_PUNCT and punct_after:
+            punct_after[-1] = True
+    return words, punct_after
+
+
 def tokenize_words(sentence: str) -> list[str]:
-    return [t for t in TOKEN_RE.findall(sentence) if re.match(r"^[A-Za-z]", t)]
+    words, _ = tokenize_words_with_boundaries(sentence)
+    return words
 
 
 def is_likely_noun(word: str) -> bool:
-    if "-" in word or word == "CODE_SPAN":
+    if "-" in word or word in PROTECTED_PLACEHOLDERS:
         return False
     lw = word.lower()
     if (
@@ -523,7 +553,7 @@ def is_likely_noun(word: str) -> bool:
 
 def analyze_sentence(idx: int, sentence: str) -> list[Finding]:
     findings: list[Finding] = []
-    words = tokenize_words(sentence)
+    words, punct_after = tokenize_words_with_boundaries(sentence)
     lower_words = [w.lower() for w in words]
     n = len(lower_words)
     if n == 0:
@@ -567,7 +597,7 @@ def analyze_sentence(idx: int, sentence: str) -> list[Finding]:
         w
         for i, w in enumerate(words)
         if i > 0
-        and w != "CODE_SPAN"
+        and w not in PROTECTED_PLACEHOLDERS
         and w[0].isupper()
         and w.lower() not in FUNCTION_WORDS
     ]
@@ -642,10 +672,10 @@ def analyze_sentence(idx: int, sentence: str) -> list[Finding]:
                 )
             )
 
-    # 5. Stacked noun chains (Clark et al. 2026: dense nominal compounds)
+    # 5. Stacked noun chains (Clark et al. 2026: dense nominal compounds within a single clause)
     run: list[str] = []
     for i, orig in enumerate(words):
-        if orig == "CODE_SPAN":
+        if orig in PROTECTED_PLACEHOLDERS:
             if len(run) >= 3:
                 findings.append(
                     Finding(
@@ -662,6 +692,20 @@ def analyze_sentence(idx: int, sentence: str) -> list[Finding]:
             continue
         if is_likely_noun(orig) and (i == 0 or not orig[0].isupper()):
             run.append(orig)
+            if punct_after[i]:
+                if len(run) >= 3:
+                    findings.append(
+                        Finding(
+                            sentence_index=idx,
+                            category="psycholinguistic",
+                            rule="stacked_noun_chain",
+                            severity="medium",
+                            span=" ".join(run),
+                            explanation="3+ consecutive nouns/modifiers compress relations and increase working-memory load.",
+                            suggestion="Unpack the noun stack using prepositions ('of', 'for') or a clarifying clause.",
+                        )
+                    )
+                run = []
         else:
             if len(run) >= 3:
                 findings.append(
@@ -735,17 +779,24 @@ def analyze_sentence(idx: int, sentence: str) -> list[Finding]:
                     )
                     break
 
-    # 8. Reduced object relative clause heuristic:
+    # 8. Reduced object relative clause heuristic (without intervening comma punctuation):
     #    [Det] [Noun]{1,2} followed by [Pronoun] [Verb] OR [Det] [Noun] [Verb]
     rel_pronouns = {"he", "she", "they", "we", "you", "i"}
     subj_dets = {"a", "an", "the", "my", "our", "your", "their", "his", "her"}
     for i in range(n - 3):
-        if lower_words[i] in {"a", "an", "the"} and is_likely_noun(words[i + 1]):
+        if (
+            lower_words[i] in {"a", "an", "the"}
+            and not punct_after[i]
+            and is_likely_noun(words[i + 1])
+            and not punct_after[i + 1]
+        ):
             prev_verb = lower_words[i - 1] if i > 0 else ""
             if prev_verb in DITRANSITIVE_VERBS:
                 continue
             j = i + 2
             if j < n and is_likely_noun(words[j]):
+                if punct_after[j]:
+                    continue
                 j += 1
             if (
                 j + 1 < n
@@ -766,7 +817,9 @@ def analyze_sentence(idx: int, sentence: str) -> list[Finding]:
             elif (
                 j + 2 < n
                 and lower_words[j] in subj_dets
+                and not punct_after[j]
                 and is_likely_noun(words[j + 1])
+                and not punct_after[j + 1]
                 and lower_words[j + 2] not in FUNCTION_WORDS
             ):
                 findings.append(
@@ -780,9 +833,8 @@ def analyze_sentence(idx: int, sentence: str) -> list[Finding]:
                         suggestion=f"Insert 'that' before '{words[j]}' to prevent garden-path misreading.",
                     )
                 )
-
-    # 9. Long sentence / dependency span proxy (> 32 words or heavy parenthetical embedding)
-    if n > 32 or sentence.count(",") >= 4 or sentence.count("--") >= 2:
+    # 9. Long sentence / dependency span proxy (> 32 words or heavy multi-clause embedding)
+    if n > 32 or (n >= 22 and sentence.count(",") >= 4) or sentence.count("--") >= 2:
         findings.append(
             Finding(
                 sentence_index=idx,
@@ -801,7 +853,12 @@ def analyze_sentence(idx: int, sentence: str) -> list[Finding]:
 def audit_text(text: str) -> AuditReport:
     clean_text = strip_protected_spans(text)
     sentences = split_sentences(clean_text)
-    all_words = [w for s in sentences for w in tokenize_words(s) if w != "CODE_SPAN"]
+    all_words = [
+        w
+        for s in sentences
+        for w in tokenize_words(s)
+        if w not in PROTECTED_PLACEHOLDERS
+    ]
     word_count = len(all_words)
 
     if word_count == 0:

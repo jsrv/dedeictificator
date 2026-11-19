@@ -66,6 +66,21 @@ class TestAuditClarity(unittest.TestCase):
         self.assertEqual(exit_fail, 1)
         self.assertEqual(exit_pass, 0)
 
+    def test_ignores_yaml_frontmatter_quoted_mentions_and_comma_lists(self) -> None:
+        skill_doc = (
+            "---\n"
+            "name: demo-skill\n"
+            "description: Audit, score, and rewrite text with stacked nouns, reduced clauses, and long spans.\n"
+            "---\n\n"
+            "# Demo Skill\n\n"
+            'Avoid unanchored pointers like "here", "above", and "recently" across prose, documentation, prompts.\n'
+            "Use the Clarity Scorecard, a concise table, to report results.\n"
+        )
+        report = audit_text(skill_doc)
+        self.assertEqual(report.deictic_flags, 0)
+        self.assertEqual(report.psycholinguistic_flags, 0)
+        self.assertGreaterEqual(report.clarity_score, 90)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -121,6 +121,7 @@ INANIMATE_HEADS = {
     "system",
     "model",
     "pipeline",
+    "worker",
     "server",
     "database",
     "query",
@@ -168,6 +169,10 @@ FUNCTION_WORDS = {
     "under",
     "around",
     "among",
+    "per",
+    "via",
+    "versus",
+    "vs",
     "that",
     "which",
     "who",
@@ -185,6 +190,25 @@ FUNCTION_WORDS = {
     "though",
     "when",
     "where",
+    "than",
+    "rather",
+    "also",
+    "only",
+    "even",
+    "still",
+    "just",
+    "both",
+    "each",
+    "every",
+    "all",
+    "any",
+    "some",
+    "such",
+    "more",
+    "most",
+    "less",
+    "not",
+    "no",
     "is",
     "are",
     "was",
@@ -209,31 +233,167 @@ FUNCTION_WORDS = {
     "must",
 }
 
+NON_NOUN_WORDS = {
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "first",
+    "second",
+    "third",
+    "many",
+    "few",
+    "several",
+    "multiple",
+    "human",
+    "exact",
+    "new",
+    "old",
+    "high",
+    "low",
+    "long",
+    "short",
+    "large",
+    "small",
+    "good",
+    "bad",
+    "clear",
+    "hard",
+    "easy",
+    "own",
+    "same",
+    "other",
+    "another",
+    "eliminates",
+    "eliminate",
+    "sever",
+    "severs",
+    "measure",
+    "measures",
+    "flag",
+    "flags",
+    "pairs",
+    "pair",
+    "make",
+    "makes",
+    "help",
+    "helps",
+    "allow",
+    "allows",
+    "prevent",
+    "prevents",
+    "reduce",
+    "reduces",
+    "improve",
+    "improves",
+    "resolve",
+    "resolves",
+    "audit",
+    "audits",
+    "score",
+    "scores",
+    "rewrite",
+    "rewrites",
+    "run",
+    "runs",
+    "works",
+    "work",
+    "output",
+    "enforce",
+}
+
+DITRANSITIVE_VERBS = {
+    "gave",
+    "give",
+    "gives",
+    "giving",
+    "sent",
+    "send",
+    "sends",
+    "sending",
+    "told",
+    "tell",
+    "tells",
+    "telling",
+    "showed",
+    "show",
+    "shows",
+    "showing",
+    "handed",
+    "hand",
+    "hands",
+    "offered",
+    "offer",
+    "offers",
+    "brought",
+    "bring",
+    "brings",
+    "bought",
+    "buy",
+    "buys",
+    "assigned",
+    "assign",
+    "assigns",
+    "granted",
+    "grant",
+    "grants",
+}
+
 COMMON_VERBS_AFTER_DEMO = {
     "is",
     "was",
     "are",
     "were",
     "means",
+    "meant",
     "shows",
+    "showed",
     "proves",
+    "proved",
     "causes",
+    "caused",
+    "triggers",
+    "triggered",
+    "results",
+    "resulted",
     "creates",
+    "created",
     "leads",
+    "led",
     "makes",
+    "made",
     "helps",
+    "helped",
     "allows",
+    "allowed",
     "prevents",
+    "prevented",
     "requires",
+    "required",
     "suggests",
+    "suggested",
     "indicates",
+    "indicated",
     "highlights",
+    "highlighted",
     "matters",
+    "mattered",
     "works",
+    "worked",
     "fails",
+    "failed",
     "breaks",
+    "broke",
     "happens",
+    "happened",
     "occurs",
+    "occurred",
     "can",
     "could",
     "will",
@@ -249,7 +409,11 @@ COMMON_VERBS_AFTER_DEMO = {
 
 TOKEN_RE = re.compile(r"[A-Za-z]+(?:[-'][A-Za-z]+)*|\d+(?:\.\d+)?|[^\w\s]")
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(\[])")
-CODE_BLOCK_RE = re.compile(r"```[\s\S]*?```|`[^`\n]+`")
+FENCED_CODE_RE = re.compile(r"```[\s\S]*?```")
+INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+RAW_URL_RE = re.compile(r"https?://\S+")
+MD_PREFIX_RE = re.compile(r"^\s*(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+|>\s+)")
 
 
 @dataclass
@@ -288,15 +452,28 @@ class AuditReport:
 
 
 def strip_protected_spans(text: str) -> str:
-    """Replace fenced/inline code with neutral placeholders so code syntax is ignored."""
-    return CODE_BLOCK_RE.sub(" CODE_SPAN ", text)
+    """Normalize Markdown links/URLs and neutralize code blocks without merging paragraphs."""
+    cleaned = FENCED_CODE_RE.sub("\n\n", text)
+    cleaned = INLINE_CODE_RE.sub(" CODE_SPAN ", cleaned)
+    cleaned = MD_LINK_RE.sub(r"\1", cleaned)
+    cleaned = RAW_URL_RE.sub(" ", cleaned)
+    return cleaned
 
 
 def split_sentences(text: str) -> list[str]:
     cleaned = text.strip()
     if not cleaned:
         return []
-    return [p.strip() for p in SENTENCE_SPLIT_RE.split(cleaned) if p.strip()]
+    sentences: list[str] = []
+    for raw_line in cleaned.splitlines():
+        line = MD_PREFIX_RE.sub("", raw_line).strip()
+        if not line or line.startswith("|") or set(line) <= {"-", "=", "*"}:
+            continue
+        for part in SENTENCE_SPLIT_RE.split(line):
+            part = part.strip()
+            if part:
+                sentences.append(part)
+    return sentences
 
 
 def tokenize_words(sentence: str) -> list[str]:
@@ -304,12 +481,42 @@ def tokenize_words(sentence: str) -> list[str]:
 
 
 def is_likely_noun(word: str) -> bool:
+    if "-" in word or word == "CODE_SPAN":
+        return False
     lw = word.lower()
-    if lw in FUNCTION_WORDS or lw in DEMONSTRATIVES or lw in PRONOUNS:
+    if (
+        lw in FUNCTION_WORDS
+        or lw in DEMONSTRATIVES
+        or lw in PRONOUNS
+        or lw in NON_NOUN_WORDS
+    ):
         return False
     if lw in SPATIAL_DISCOURSE or lw in TEMPORAL_DEIXIS:
         return False
-    if lw.endswith(("ly", "ed", "ing", "ous", "ive", "able", "ible", "ful", "less")):
+    if lw.endswith(
+        (
+            "ly",
+            "ed",
+            "ing",
+            "ous",
+            "ive",
+            "able",
+            "ible",
+            "ful",
+            "less",
+            "al",
+            "ic",
+            "ical",
+            "ary",
+            "ory",
+            "ent",
+            "ant",
+            "ern",
+            "ates",
+            "izes",
+            "ifies",
+        )
+    ):
         return False
     return len(lw) >= 3
 
@@ -359,7 +566,10 @@ def analyze_sentence(idx: int, sentence: str) -> list[Finding]:
     capitalized_entities = [
         w
         for i, w in enumerate(words)
-        if i > 0 and w[0].isupper() and w.lower() not in FUNCTION_WORDS
+        if i > 0
+        and w != "CODE_SPAN"
+        and w[0].isupper()
+        and w.lower() not in FUNCTION_WORDS
     ]
     for i, w in enumerate(lower_words):
         if w in PRONOUNS:
@@ -525,29 +735,54 @@ def analyze_sentence(idx: int, sentence: str) -> list[Finding]:
                     )
                     break
 
-    # 8. Reduced object relative clause heuristic: [Det] [Noun] [Pronoun (he/she/they/we/you/I)] [Verb]
+    # 8. Reduced object relative clause heuristic:
+    #    [Det] [Noun]{1,2} followed by [Pronoun] [Verb] OR [Det] [Noun] [Verb]
     rel_pronouns = {"he", "she", "they", "we", "you", "i"}
+    subj_dets = {"a", "an", "the", "my", "our", "your", "their", "his", "her"}
     for i in range(n - 3):
-        if (
-            lower_words[i] in {"a", "an", "the"}
-            and is_likely_noun(words[i + 1])
-            and lower_words[i + 2] in rel_pronouns
-            and lower_words[i + 3] not in FUNCTION_WORDS
-        ):
-            findings.append(
-                Finding(
-                    sentence_index=idx,
-                    category="psycholinguistic",
-                    rule="reduced_object_relative",
-                    severity="medium",
-                    span=" ".join(words[i : i + 4]),
-                    explanation="Possible object relative clause omitting overt relativizer 'that' or 'which'.",
-                    suggestion=f"Insert 'that' before '{words[i + 2]}' to prevent garden-path misreading.",
+        if lower_words[i] in {"a", "an", "the"} and is_likely_noun(words[i + 1]):
+            prev_verb = lower_words[i - 1] if i > 0 else ""
+            if prev_verb in DITRANSITIVE_VERBS:
+                continue
+            j = i + 2
+            if j < n and is_likely_noun(words[j]):
+                j += 1
+            if (
+                j + 1 < n
+                and lower_words[j] in rel_pronouns
+                and lower_words[j + 1] not in FUNCTION_WORDS
+            ):
+                findings.append(
+                    Finding(
+                        sentence_index=idx,
+                        category="psycholinguistic",
+                        rule="reduced_object_relative",
+                        severity="medium",
+                        span=" ".join(words[i : j + 2]),
+                        explanation="Possible object relative clause omitting overt relativizer 'that' or 'which'.",
+                        suggestion=f"Insert 'that' before '{words[j]}' to prevent garden-path misreading.",
+                    )
                 )
-            )
+            elif (
+                j + 2 < n
+                and lower_words[j] in subj_dets
+                and is_likely_noun(words[j + 1])
+                and lower_words[j + 2] not in FUNCTION_WORDS
+            ):
+                findings.append(
+                    Finding(
+                        sentence_index=idx,
+                        category="psycholinguistic",
+                        rule="reduced_object_relative",
+                        severity="medium",
+                        span=" ".join(words[i : j + 3]),
+                        explanation="Possible object relative clause omitting overt relativizer 'that' or 'which'.",
+                        suggestion=f"Insert 'that' before '{words[j]}' to prevent garden-path misreading.",
+                    )
+                )
 
-    # 9. Long sentence / dependency span proxy (> 28 words or heavy parenthetical embedding)
-    if n > 28 or sentence.count(",") >= 3 or sentence.count("--") >= 2:
+    # 9. Long sentence / dependency span proxy (> 32 words or heavy parenthetical embedding)
+    if n > 32 or sentence.count(",") >= 4 or sentence.count("--") >= 2:
         findings.append(
             Finding(
                 sentence_index=idx,
@@ -566,7 +801,7 @@ def analyze_sentence(idx: int, sentence: str) -> list[Finding]:
 def audit_text(text: str) -> AuditReport:
     clean_text = strip_protected_spans(text)
     sentences = split_sentences(clean_text)
-    all_words = tokenize_words(clean_text)
+    all_words = [w for s in sentences for w in tokenize_words(s) if w != "CODE_SPAN"]
     word_count = len(all_words)
 
     if word_count == 0:
@@ -596,7 +831,7 @@ def audit_text(text: str) -> AuditReport:
     severity_weights = {"high": 9.0, "medium": 5.0, "low": 2.5}
     raw_penalty = sum(severity_weights.get(f.severity, 4.0) for f in findings)
     norm_factor = max(1.0, len(sentences) / 2.5)
-    density_penalty = max(0.0, (lexical_density - 0.62) * 45.0)
+    density_penalty = max(0.0, (lexical_density - 0.65) * 40.0)
     score = round(
         max(0.0, min(100.0, 100.0 - (raw_penalty / norm_factor) - density_penalty))
     )

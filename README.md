@@ -1,5 +1,7 @@
 # Dedeictificator
 
+[![CI](https://github.com/jsrv/dedeictificator/actions/workflows/ci.yml/badge.svg)](https://github.com/jsrv/dedeictificator/actions/workflows/ci.yml)
+
 An agent skill and zero-dependency psycholinguistic linter that eliminates **deictic ambiguity** and **high-processing-cost LLM syntax**, grounded in Clark, Martin, and Mahowald (2026), *"Why is AI-generated language so hard to understand?"* ([arXiv:2610.29162](https://arxiv.org/abs/2610.29162)).
 
 ## Why This Exists
